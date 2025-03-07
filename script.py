@@ -1,17 +1,21 @@
+# Standard library imports
+import argparse
+import csv
+import datetime
+import logging
+import os
+import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Third party imports
+import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import re
-import csv
-import logging
-import datetime
-import os
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import pandas as pd
+from selenium.webdriver.support.ui import WebDriverWait
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -349,11 +353,16 @@ def main():
     """
     Main function that runs the multi-threaded scraper
     """
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Stock market data scraper')
+    parser.add_argument('-n', type=int, default=50,
+                      help='Number of stock codes to scrape (default: 50)')
+    args = parser.parse_args()
+
     # Base URL
     base_url = "https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote"
     
-    num_stocks = 50  # Adjust as needed
-    stock_codes = [str(i) for i in range(1, num_stocks + 1)]
+    stock_codes = [str(i) for i in range(1, args.n + 1)]
     logger.info(f"Generated {len(stock_codes)} sequential stock codes")
     
     # Determine optimal thread count based on system

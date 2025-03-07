@@ -56,8 +56,16 @@ source venv/bin/activate
 
 2. Run the scraper:
 ```bash
-python script.py
+# Basic usage (will scrape 50 stocks by default)
+python3 script.py
+
+# Specify number of stocks to scrape (e.g., scrape 100 stocks)
+python3 script.py -n 100
 ```
+
+Command-line arguments:
+- `-n`: Number of stock codes to scrape (default: 50)
+  Example: `python3 script.py -n 75` will scrape 75 stocks
 
 The script will:
 - Scrape data from the specified websites
@@ -73,6 +81,7 @@ The project uses the following main dependencies:
 - concurrent.futures (>=3.7.0): For parallel processing
 - logging (>=0.5.1): For debug logging
 - selenium (>=4.0.0): For browser automation
+- argparse (>=1.4.0): For command-line argument parsing
 
 ## Notes
 

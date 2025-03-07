@@ -4,3 +4,4 @@ pandas>=1.2.0
 concurrent.futures>=3.7.0
 logging>=0.5.1
 selenium>=4.0.0
+argparse>=1.4.0
