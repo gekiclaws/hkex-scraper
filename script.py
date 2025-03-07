@@ -2,15 +2,16 @@ import time
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import re
 import csv
 import logging
 import datetime
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
-import sys
-from queue import Queue
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -26,23 +27,32 @@ csv_lock = threading.Lock()
 CSV_TEMP_PATH = 'stock_data_temp.csv'
 CSV_FINAL_PATH = 'stock_data.csv'
 
-# Thread-safe queue for tracking stock codes to process
-stock_queue = Queue()
-
 def setup_driver():
     """Create and return a configured WebDriver instance"""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.page_load_strategy = 'eager'
+    chrome_options.add_argument(f"--user-agent=Mozilla/5.0 StockScraper Thread-{threading.get_ident()}")
     
-    driver = webdriver.Chrome(options=chrome_options)
-    driver.set_page_load_timeout(30)
-    return driver
+    return webdriver.Chrome(options=chrome_options)
 
-def get_element_with_retry(driver, by_method, selector, retry_time=15):
-    """Try to get an element with explicit timeout"""
+def is_404_page(driver):
+    """Check if the current page is a 404 error page"""
+    # Check for common 404 indicators
+    try:
+        # Check if URL has been changed to https://www.hkex.com.hk/CustomErrorHandler/404.aspx
+        if driver.current_url == "https://www.hkex.com.hk/CustomErrorHandler/404.aspx":
+            return True
+    
+    except Exception as e:
+        # If we can't determine, assume it's not a 404
+        logger.debug(f"Error checking for 404 page: {e}")
+    
+    return False
+
+def get_element_with_retry(driver, by_method, selector, retry_time=30):
+    """Try to get an element for up to retry_time seconds"""
     start_time = time.time()
     
     while time.time() - start_time < retry_time:
@@ -71,149 +81,140 @@ def write_to_csv(data):
     with csv_lock:
         file_exists = os.path.isfile(CSV_TEMP_PATH)
         with open(CSV_TEMP_PATH, 'a', newline='') as csvfile:
-            fieldnames = ['CODE', 'DATE', 'OPEN', 'INTRADAY_HIGH', 'INTRADAY_LOW', 'CLOSE', 'P/E', 'VOLUME']
+            fieldnames = ['CODE', 'DATE', 'OPEN', 'INTRADAY_HIGH', 'INTRADAY_LOW', 'CLOSE', 'P/E', 'VOLUME', 'STATUS']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             
+            # Write header only if file is new
             if not file_exists:
                 writer.writeheader()
             
+            # Write the data row
             writer.writerow(data)
-            csvfile.flush()
-            os.fsync(csvfile.fileno())
 
-def scrape_stock_data(base_url, thread_id):
-    """Worker function that continuously pulls stock codes from the queue and processes them"""
+def scrape_stock_data(stock_code, base_url):
+    """
+    Scrapes stock data for a single stock code and writes directly to CSV
+    """
+    thread_id = threading.get_ident()
     thread_logger = logging.getLogger(f"Thread-{thread_id}")
-    thread_logger.info(f"Worker thread {thread_id} started")
+    thread_logger.info(f"STARTED scraping stock code: {stock_code}")
     
     driver = None
+    url = f"{base_url}?sym={stock_code}"
     
     try:
-        # Initialize driver just once per thread
+        # Use system date
+        today = datetime.datetime.now()
+        formatted_date = today.strftime('%Y%m%d')
+        
+        # Initialize data with defaults
+        data = {
+            'CODE': stock_code,
+            'DATE': formatted_date,
+            'OPEN': 'N/A',
+            'INTRADAY_HIGH': 'N/A',
+            'INTRADAY_LOW': 'N/A',
+            'CLOSE': 'N/A',
+            'P/E': 'N/A',
+            'VOLUME': 'N/A',
+            'STATUS': 'Success'
+        }
+
+        # Initialize driver
         driver = setup_driver()
         
-        while not stock_queue.empty():
-            try:
-                # Get the next stock code from the queue with a timeout
-                try:
-                    stock_code = stock_queue.get(timeout=1)
-                except:
-                    # Queue is empty or timeout occurred
-                    break
+        # Load the page
+        driver.get(url)
+        
+        # Check for 404 immediately
+        if is_404_page(driver):
+            thread_logger.info(f"Stock {stock_code} returned a 404 error - skipping")
+            data['STATUS'] = 'InvalidStockCode'
+            
+            # Write to CSV and console even for 404 cases
+            with print_lock:
+                print(f"{stock_code},{formatted_date},N/A,N/A,N/A,N/A,N/A,N/A,404_NotFound")
                 
-                thread_logger.info(f"STARTED scraping stock code: {stock_code}")
-                url = f"{base_url}?sym={stock_code}"
-                
-                # Use system date
-                today = datetime.datetime.now()
-                formatted_date = today.strftime('%Y%m%d')
-                
-                # Initialize data with defaults
-                data = {
-                    'CODE': stock_code,
-                    'DATE': formatted_date,
-                    'OPEN': 'N/A',
-                    'INTRADAY_HIGH': 'N/A',
-                    'INTRADAY_LOW': 'N/A',
-                    'CLOSE': 'N/A',
-                    'P/E': 'N/A',
-                    'VOLUME': 'N/A'
-                }
-                
-                # Load the page with a retry mechanism
-                max_retries = 3
-                for retry in range(max_retries):
-                    try:
-                        driver.get(url)
-                        break
-                    except Exception as e:
-                        if retry == max_retries - 1:
-                            thread_logger.error(f"Failed to load page for stock {stock_code} after {max_retries} attempts: {e}")
-                            raise
-                        else:
-                            thread_logger.warning(f"Retrying page load for stock {stock_code} (attempt {retry+1}/{max_retries})")
-                            time.sleep(2)
-                
-                # Wait for initial page load
-                time.sleep(2)
-                
-                # Extract open price
-                open_element = get_element_with_retry(driver, By.CLASS_NAME, "col_open")
-                if open_element:
-                    data['OPEN'] = extract_value_with_regex(open_element.text, r'HK\$(\d+\.\d+)')
-                
-                # Extract intraday high
-                high_element = get_element_with_retry(driver, By.CLASS_NAME, "col_high")
-                if high_element:
-                    data['INTRADAY_HIGH'] = extract_value_with_regex(high_element.text, r'HK\$(\d+\.\d+)')
-                
-                # Extract intraday low
-                low_element = get_element_with_retry(driver, By.CLASS_NAME, "col_low")
-                if low_element:
-                    data['INTRADAY_LOW'] = extract_value_with_regex(low_element.text, r'HK\$(\d+\.\d+)')
-                
-                # Extract close price
-                close_element = get_element_with_retry(driver, By.CLASS_NAME, "col_prevcls")
-                if close_element:
-                    data['CLOSE'] = extract_value_with_regex(close_element.text, r'HK\$(\d+\.\d+)')
-                
-                # Extract P/E ratio
-                pe_element = get_element_with_retry(driver, By.CLASS_NAME, "col_pe")
-                if pe_element:
-                    data['P/E'] = extract_value_with_regex(pe_element.text, r'(\d+\.\d+)x')
-                
-                # Extract volume
-                volume_element = get_element_with_retry(driver, By.CLASS_NAME, "col_volume")
-                if volume_element:
-                    volume_match = re.search(r'(\d+\.?\d*)M?', volume_element.text)
-                    if volume_match:
-                        volume = volume_match.group(1)
-                        if 'M' in volume_element.text:
-                            volume = float(volume) * 1000000
-                        data['VOLUME'] = str(volume)
-                
-                # Log completion
-                thread_logger.info(f"Scraping completed for stock {stock_code}. Results: {data}")
-                
-                # Format the output string for console display
-                output = f"{data['CODE']},{data['DATE']},{data['OPEN']},{data['INTRADAY_HIGH']},{data['INTRADAY_LOW']},{data['CLOSE']},{data['P/E']},{data['VOLUME']}"
-                
-                # Print to console with lock
-                with print_lock:
-                    print(output)
-                
-                # Write directly to CSV
-                write_to_csv(data)
-                
-                # Mark task as done in the queue
-                stock_queue.task_done()
-                
-            except Exception as e:
-                thread_logger.error(f"Error in scraping stock: {e}", exc_info=True)
-                # Even if there's an error, mark the task as done
-                try:
-                    stock_queue.task_done()
-                except:
-                    pass
-                
-                # Create a new driver if the current one is in a bad state
-                try:
-                    if driver:
-                        driver.quit()
-                except:
-                    pass
-                driver = setup_driver()
+            write_to_csv(data)
+            return True
+        
+        # Initial wait for page load
+        time.sleep(2)
+        
+        # Extract open price
+        open_element = get_element_with_retry(driver, By.CLASS_NAME, "col_open")
+        if open_element:
+            data['OPEN'] = extract_value_with_regex(open_element.text, r'HK\$(\d+\.\d+)')
+        
+        # Extract intraday high
+        high_element = get_element_with_retry(driver, By.CLASS_NAME, "col_high")
+        if high_element:
+            data['INTRADAY_HIGH'] = extract_value_with_regex(high_element.text, r'HK\$(\d+\.\d+)')
+        
+        # Extract intraday low
+        low_element = get_element_with_retry(driver, By.CLASS_NAME, "col_low")
+        if low_element:
+            data['INTRADAY_LOW'] = extract_value_with_regex(low_element.text, r'HK\$(\d+\.\d+)')
+        
+        # Extract close price
+        close_element = get_element_with_retry(driver, By.CLASS_NAME, "col_prevcls")
+        if close_element:
+            data['CLOSE'] = extract_value_with_regex(close_element.text, r'HK\$(\d+\.\d+)')
+        
+        # Extract P/E ratio
+        pe_element = get_element_with_retry(driver, By.CLASS_NAME, "col_pe")
+        if pe_element:
+            data['P/E'] = extract_value_with_regex(pe_element.text, r'(\d+\.\d+)x')
+        
+        # Extract volume
+        volume_element = get_element_with_retry(driver, By.CLASS_NAME, "col_volume")
+        if volume_element:
+            volume_match = re.search(r'(\d+\.?\d*)M?', volume_element.text)
+            if volume_match:
+                volume = volume_match.group(1)
+                if 'M' in volume_element.text:
+                    volume = float(volume) * 1000000
+                data['VOLUME'] = str(volume)
+        
+        # Log completion
+        thread_logger.info(f"Scraping completed for stock {stock_code}. Results: {data}")
+        
+        # Format the output string for console display
+        output = f"{data['CODE']},{data['DATE']},{data['OPEN']},{data['INTRADAY_HIGH']},{data['INTRADAY_LOW']},{data['CLOSE']},{data['P/E']},{data['VOLUME']},{data['STATUS']}"
+        
+        # Print to console with lock
+        with print_lock:
+            print(output)
+        
+        # Write directly to CSV
+        write_to_csv(data)
+        
+        return True
+    
+    except Exception as e:
+        thread_logger.error(f"Error in scraping stock {stock_code}: {e}", exc_info=True)
+        
+        # Create data entry for error case
+        data = {
+            'CODE': stock_code,
+            'DATE': datetime.datetime.now().strftime('%Y%m%d'),
+            'OPEN': 'N/A',
+            'INTRADAY_HIGH': 'N/A',
+            'INTRADAY_LOW': 'N/A',
+            'CLOSE': 'N/A',
+            'P/E': 'N/A',
+            'VOLUME': 'N/A',
+            'STATUS': f'Error: {str(e)[:50]}'  # Truncate very long error messages
+        }
+        
+        # Still write to CSV so we have a record of the failure
+        write_to_csv(data)
+        
+        return False
     
     finally:
-        # Always close the driver
         if driver:
-            try:
-                driver.quit()
-                thread_logger.debug(f"Driver closed for worker {thread_id}")
-            except:
-                pass
-        
-        thread_logger.info(f"Worker thread {thread_id} finished")
+            driver.quit()
 
 def sort_csv_file():
     """Sort the CSV file by stock code"""
@@ -230,6 +231,7 @@ def sort_csv_file():
         try:
             df['CODE'] = df['CODE'].astype(int)
         except:
+            # If conversion fails, keep as string
             pass
             
         # Sort the DataFrame
@@ -238,92 +240,85 @@ def sort_csv_file():
         # Write the sorted DataFrame to the final CSV file
         df_sorted.to_csv(CSV_FINAL_PATH, index=False)
         
-        # Remove the temporary file
+        # Optionally remove the temporary file
         os.remove(CSV_TEMP_PATH)
         
-        logger.info(f"CSV file sorted successfully. Total records: {len(df)}")
+        # Generate some statistics
+        total_records = len(df)
+        success_records = len(df[df['STATUS'] == 'Success'])
+        not_found_records = len(df[df['STATUS'] == 'NotFound'])
+        error_records = total_records - success_records - not_found_records
+        
+        logger.info(f"CSV file sorted successfully. Total records: {total_records}")
+        logger.info(f"  Success: {success_records}, Not Found: {not_found_records}, Errors: {error_records}")
+        
         return True
         
     except Exception as e:
         logger.error(f"Error sorting CSV file: {e}", exc_info=True)
         return False
 
-def process_stocks_with_fixed_threads(base_url, stock_codes, num_threads=4):
+def scrape_stocks_multithreaded(base_url, stock_codes, max_workers=4):
     """
-    Process stocks using a fixed number of worker threads pulling from a queue
-    This approach is more reliable than ThreadPoolExecutor for this specific scenario
+    Scrape multiple stock codes using multi-threading
     """
-    logger.info(f"Starting stock processing with {num_threads} worker threads")
+    logger.info(f"Starting multi-threaded scraping with {max_workers} workers")
     
-    # Create a fresh CSV file
+    # Create a fresh CSV file (will overwrite if exists)
     if os.path.exists(CSV_TEMP_PATH):
         os.remove(CSV_TEMP_PATH)
     
-    # Fill the queue with all stock codes
-    for code in stock_codes:
-        stock_queue.put(code)
+    successful_scrapes = 0
+    failed_scrapes = 0
     
-    # Create and start the worker threads
-    threads = []
-    for i in range(num_threads):
-        thread = threading.Thread(target=scrape_stock_data, args=(base_url, i))
-        thread.daemon = True  # Make threads daemon so they exit when main thread exits
-        threads.append(thread)
-        thread.start()
+    # Using ThreadPoolExecutor to manage threads
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit scraping jobs to the thread pool
+        future_to_stock = {executor.submit(scrape_stock_data, code, base_url): code for code in stock_codes}
+        
+        # Process results as they complete
+        for future in as_completed(future_to_stock):
+            stock_code = future_to_stock[future]
+            try:
+                result = future.result()
+                if result:
+                    successful_scrapes += 1
+                else:
+                    failed_scrapes += 1
+            except Exception as e:
+                logger.error(f"Exception with stock {stock_code}: {e}")
+                failed_scrapes += 1
     
-    # Monitor progress
-    total_stocks = len(stock_codes)
-    
-    try:
-        # Monitor until the queue is empty
-        while not stock_queue.empty():
-            remaining = stock_queue.qsize()
-            completed = total_stocks - remaining
-            logger.info(f"Progress: {completed}/{total_stocks} stocks processed ({completed/total_stocks*100:.1f}%)")
-            
-            # Print the 3 most recent stocks being processed
-            time.sleep(5)
-        
-        # Wait for all threads to complete any remaining work
-        stock_queue.join()  # This blocks until all items in the queue have been processed
-        
-        logger.info("All stocks have been processed")
-        return True
-        
-    except KeyboardInterrupt:
-        logger.info("Received keyboard interrupt. Stopping gracefully...")
-        return False
+    logger.info(f"Multi-threaded scraping completed. Success: {successful_scrapes}, Failed: {failed_scrapes}")
+    return successful_scrapes, failed_scrapes
 
 def main():
-    """Main function that runs the stock scraper"""
+    """
+    Main function that runs the multi-threaded scraper
+    """
     # Base URL
     base_url = "https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote"
     
-    # Number of stocks to scrape
-    num_stocks = 15  # Adjust as needed
+    # Set the number of stocks to scrape
+    num_stocks = 100  # Adjust as needed
     
     # Generate list of stock codes
     stock_codes = [str(i) for i in range(1, num_stocks + 1)]
     
-    logger.info(f"Starting stock scraper for {num_stocks} stocks")
+    logger.info(f"Starting stock scraping for {len(stock_codes)} stock codes")
     
-    # Determine thread count 
-    num_threads = min(4, os.cpu_count() or 2)
+    # Determine optimal thread count
+    max_threads = min(10, os.cpu_count() or 4)
     
-    # Start processing
-    success = process_stocks_with_fixed_threads(base_url, stock_codes, num_threads)
+    # Start scraping
+    successful, failed = scrape_stocks_multithreaded(base_url, stock_codes, max_threads)
     
-    # Sort the CSV file after all processing is complete
-    if success:
-        logger.info("Sorting CSV file...")
-        sort_csv_file()
-        logger.info(f"CSV data sorted and written to {CSV_FINAL_PATH}")
-    else:
-        logger.warning("Processing did not complete successfully, but attempting to sort any collected data...")
-        if os.path.exists(CSV_TEMP_PATH):
-            sort_csv_file()
+    # Sort the CSV file after all scraping is complete
+    logger.info("Sorting CSV file...")
+    sort_csv_file()
+    logger.info(f"CSV data sorted and written to {CSV_FINAL_PATH}")
     
-    logger.info("Script execution completed.")
+    logger.info(f"Script execution completed. Processed {successful + failed} stocks.")
 
 if __name__ == "__main__":
     main()
