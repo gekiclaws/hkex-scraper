@@ -230,8 +230,12 @@ def scrape_stock_data(stock_code, base_url):
         volume_match = re.search(r'(\d+\.?\d*)M?', volume_text)
         if volume_match:
             volume = volume_match.group(1)
-            if 'M' in volume_text:
+            if 'B' in volume_text:
+                volume = float(volume) * 1000000000
+            elif 'M' in volume_text:
                 volume = float(volume) * 1000000
+            elif 'K' in volume_text:
+                volume = float(volume) * 1000
             data['VOLUME'] = str(volume)
         
         # Log completion
