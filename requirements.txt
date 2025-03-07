@@ -1,0 +1,6 @@
+beautifulsoup4>=4.9.3
+requests>=2.25.1
+pandas>=1.2.0
+concurrent.futures>=3.7.0
+logging>=0.5.1
+selenium>=4.0.0
