@@ -35,31 +35,85 @@ def setup_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument(f"--user-agent=Mozilla/5.0 StockScraper Thread-{threading.get_ident()}")
     
-    return webdriver.Chrome(options=chrome_options)
+    # Add page load timeout
+    driver = webdriver.Chrome(options=chrome_options)
+    driver.set_page_load_timeout(20)  # 20 second timeout for page loads
+    return driver
 
 def is_404_page(driver):
-    """Check if the current page is a 404 error page"""
-    # Check for common 404 indicators
+    """
+    Enhanced check for 404 error pages using multiple indicators
+    """
     try:
-        # Check if URL has been changed to https://www.hkex.com.hk/CustomErrorHandler/404.aspx
-        if driver.current_url == "https://www.hkex.com.hk/CustomErrorHandler/404.aspx":
+        # Method 1: Check URL redirect to error page
+        if "404.aspx" in driver.current_url or "error" in driver.current_url.lower():
             return True
-    
+        
+        # Method 2: Check page title for error indicators
+        page_title = driver.title.lower()
+        if "404" in page_title or "not found" in page_title or "error" in page_title:
+            return True
+        
+        # Method 3: Check for common error messages in page content
+        page_text = driver.page_source.lower()
+        error_indicators = ["page not found", "404 error", "does not exist", "unavailable"]
+        if any(indicator in page_text for indicator in error_indicators):
+            return True
+        
+        # Method 4: Check for mandatory stock elements
+        # If none of these essential elements are found, it's likely not a valid stock page
+        essential_elements = [
+            driver.find_elements(By.CLASS_NAME, "col_open"),
+            driver.find_elements(By.CLASS_NAME, "col_high"),
+            driver.find_elements(By.CLASS_NAME, "col_low")
+        ]
+        
+        # If all essential elements are missing, consider it a 404
+        if all(len(elements) == 0 for elements in essential_elements):
+            return True
+            
     except Exception as e:
-        # If we can't determine, assume it's not a 404
         logger.debug(f"Error checking for 404 page: {e}")
     
     return False
 
-def get_element_with_retry(driver, by_method, selector, retry_time=30):
+def validate_stock_page(driver):
+    """
+    Validates if the page contains actual stock data
+    Returns True if valid, False otherwise
+    """
+    try:
+        # Check if at least one of these elements contains numeric data
+        data_indicators = [
+            (By.CLASS_NAME, "col_open"),
+            (By.CLASS_NAME, "col_high"),
+            (By.CLASS_NAME, "col_prevcls")
+        ]
+        
+        for by_method, selector in data_indicators:
+            elements = driver.find_elements(by_method, selector)
+            if elements:
+                for element in elements:
+                    # Check if element contains a price value
+                    if element.text and re.search(r'HK\$\d+\.\d+', element.text):
+                        return True
+        
+        # If we get here, no valid stock data was found
+        return False
+        
+    except Exception as e:
+        logger.debug(f"Error validating stock page: {e}")
+        return False
+
+def get_element_with_retry(driver, by_method, selector, retry_time=15):
     """Try to get an element for up to retry_time seconds"""
     start_time = time.time()
     
     while time.time() - start_time < retry_time:
         try:
-            element = driver.find_element(by_method, selector)
-            if element and element.text:
-                return element
+            elements = driver.find_elements(by_method, selector)
+            if elements and elements[0].text:
+                return elements[0]
         except:
             pass
         time.sleep(0.5)
@@ -123,8 +177,17 @@ def scrape_stock_data(stock_code, base_url):
         # Initialize driver
         driver = setup_driver()
         
-        # Load the page
-        driver.get(url)
+        try:
+            # Load the page with timeout
+            driver.get(url)
+        except Exception as e:
+            thread_logger.info(f"Timeout or error loading stock {stock_code}: {e}")
+            data['STATUS'] = 'TimeoutOrError'
+            write_to_csv(data)
+            return False
+        
+        # Short wait for initial page load
+        time.sleep(1)
         
         # Check for 404 immediately
         if is_404_page(driver):
@@ -136,10 +199,18 @@ def scrape_stock_data(stock_code, base_url):
                 print(f"{stock_code},{formatted_date},N/A,N/A,N/A,N/A,N/A,N/A,404_NotFound")
                 
             write_to_csv(data)
-            return True
+            return False
         
-        # Initial wait for page load
-        time.sleep(2)
+        # Validate that the page contains actual stock data
+        if not validate_stock_page(driver):
+            thread_logger.info(f"Stock {stock_code} page loaded but no valid stock data found")
+            data['STATUS'] = 'NoStockData'
+            
+            with print_lock:
+                print(f"{stock_code},{formatted_date},N/A,N/A,N/A,N/A,N/A,N/A,NoStockData")
+                
+            write_to_csv(data)
+            return False
         
         # Extract open price
         open_element = get_element_with_retry(driver, By.CLASS_NAME, "col_open")
@@ -175,6 +246,17 @@ def scrape_stock_data(stock_code, base_url):
                 if 'M' in volume_element.text:
                     volume = float(volume) * 1000000
                 data['VOLUME'] = str(volume)
+        
+        # Final data validation check - if all data values are N/A, mark as error
+        if all(value == 'N/A' for key, value in data.items() if key not in ['CODE', 'DATE', 'STATUS']):
+            thread_logger.info(f"Stock {stock_code} returned all N/A values - marking as invalid")
+            data['STATUS'] = 'AllDataNA'
+            
+            with print_lock:
+                print(f"{stock_code},{formatted_date},N/A,N/A,N/A,N/A,N/A,N/A,AllDataNA")
+                
+            write_to_csv(data)
+            return False
         
         # Log completion
         thread_logger.info(f"Scraping completed for stock {stock_code}. Results: {data}")
@@ -246,11 +328,11 @@ def sort_csv_file():
         # Generate some statistics
         total_records = len(df)
         success_records = len(df[df['STATUS'] == 'Success'])
-        not_found_records = len(df[df['STATUS'] == 'NotFound'])
-        error_records = total_records - success_records - not_found_records
+        invalid_records = len(df[df['STATUS'].isin(['InvalidStockCode', '404_NotFound', 'NoStockData', 'AllDataNA'])])
+        error_records = total_records - success_records - invalid_records
         
         logger.info(f"CSV file sorted successfully. Total records: {total_records}")
-        logger.info(f"  Success: {success_records}, Not Found: {not_found_records}, Errors: {error_records}")
+        logger.info(f"  Success: {success_records}, Invalid: {invalid_records}, Errors: {error_records}")
         
         return True
         
@@ -299,15 +381,11 @@ def main():
     # Base URL
     base_url = "https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote"
     
-    # Set the number of stocks to scrape
     num_stocks = 100  # Adjust as needed
-    
-    # Generate list of stock codes
     stock_codes = [str(i) for i in range(1, num_stocks + 1)]
+    logger.info(f"Generated {len(stock_codes)} sequential stock codes")
     
-    logger.info(f"Starting stock scraping for {len(stock_codes)} stock codes")
-    
-    # Determine optimal thread count
+    # Determine optimal thread count based on system
     max_threads = min(10, os.cpu_count() or 4)
     
     # Start scraping
