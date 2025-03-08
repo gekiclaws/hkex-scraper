@@ -1,6 +1,6 @@
-# Web Scraper Project
+# HKEX Stock Scraper
 
-This project is a web scraping tool that uses various Python libraries to collect and process data from websites.
+This project is a web scraping tool that uses various Python libraries to collect and process stock data from HKEX.
 
 ## Prerequisites
 
