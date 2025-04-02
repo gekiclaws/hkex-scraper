@@ -357,16 +357,10 @@ def main():
     """
     Main function that runs the multi-threaded scraper
     """
-    # Set up argument parser
-    parser = argparse.ArgumentParser(description='Stock market data scraper')
-    parser.add_argument('-n', type=int, default=50,
-                      help='Number of stock codes to scrape (default: 50)')
-    args = parser.parse_args()
-
     # Base URL
     base_url = "https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote"
     
-    stock_codes = [str(i) for i in range(1, args.n + 1)]
+    stock_codes = [str(i) for i in range(1000, 4001)] + [str(i) for i in range(9500, 10000)]
     logger.info(f"Generated {len(stock_codes)} sequential stock codes")
     
     # Determine optimal thread count based on system
