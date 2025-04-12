@@ -370,7 +370,7 @@ def main():
     logger.info(f"Generated {len(stock_codes)} sequential stock codes")
     
     # Determine optimal thread count based on system
-    max_threads = min(10, os.cpu_count() or 4)
+    max_threads = os.cpu_count() or 1
     
     # Start scraping
     successful, failed = scrape_stocks_multithreaded(base_url, stock_codes, max_threads)
