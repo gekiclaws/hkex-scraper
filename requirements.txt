@@ -5,3 +5,5 @@ concurrent.futures>=3.7.0
 logging>=0.5.1
 selenium>=4.0.0
 argparse>=1.4.0
+dotenv>=0.19.0
+pymongo>=3.11.0
