@@ -17,17 +17,41 @@ def chunk(lst, n):
     for i in range(0, len(lst), size):
         yield lst[i:i + size]
 
+def load_stock_codes_from_file(path: str) -> list[str]:
+    codes: list[str] = []
+
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+
+            if not line or line.startswith("#"):
+                continue
+
+            if "-" not in line:
+                raise ValueError(f"Invalid range line: {line}")
+
+            start_s, end_s = line.split("-", 1)
+
+            try:
+                start = int(start_s)
+                end = int(end_s)
+            except ValueError:
+                raise ValueError(f"Invalid integers in line: {line}")
+
+            if start >= end:
+                raise ValueError(f"Invalid range (start >= end): {line}")
+
+            codes.extend(str(i) for i in range(start, end))
+
+    return codes
 
 def main():
     base_url = "https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote"
 
-    stock_codes = (
-        [str(i) for i in range(1, 1501)]
-        + [str(i) for i in range(1501, 2650)]
-        + [str(i) for i in range(3300, 3400)]
-        + [str(i) for i in range(3600, 3700)]
-        + [str(i) for i in range(9850, 10000)]
-    )
+    RANGES_FILE = "stock_ranges.txt"
+
+    stock_codes = load_stock_codes_from_file(RANGES_FILE)
+    logger.info(f"Loaded {len(stock_codes)} stock codes from {RANGES_FILE}")
 
     reset_temp_csv()
 
