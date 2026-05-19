@@ -1,0 +1,43 @@
+name: Run HKEX scraper
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browser
+        run: playwright install --with-deps chromium
+
+      - name: Run scraper
+        run: python main.py
+
+      - name: Upload CSV output
+        uses: actions/upload-artifact@v4
+        with:
+          name: hkex-stock-data
+          path: stock_data.csv
+          if-no-files-found: error
+
+      - name: Upload debug log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hkex-scraper-debug-log
+          path: stock_scraper_debug.log
+          if-no-files-found: ignore
