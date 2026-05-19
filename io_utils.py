@@ -43,7 +43,7 @@ def write_row(row: dict) -> None:
             w.writerow(row)
 
 
-def sort_and_finalize_csv() -> bool:
+def sort_and_finalize_csv(output_path: str = CSV_FINAL_PATH) -> bool:
     """Sort temp CSV by CODE and write final CSV. Deletes temp file."""
     try:
         if not os.path.exists(CSV_TEMP_PATH):
@@ -59,14 +59,14 @@ def sort_and_finalize_csv() -> bool:
             pass
 
         df_sorted = df.sort_values(by=["CODE"])
-        df_sorted.to_csv(CSV_FINAL_PATH, index=False)
+        df_sorted.to_csv(output_path, index=False)
 
         os.remove(CSV_TEMP_PATH)
 
         total = len(df_sorted)
         success = int((df_sorted["STATUS"] == "Success").sum())
         error = int((df_sorted["STATUS"] == "Error").sum())
-        logger.info(f"Finalized CSV. Total={total} Success={success} Error={error}")
+        logger.info(f"Finalized CSV. Path={output_path} Total={total} Success={success} Error={error}")
 
         return True
 

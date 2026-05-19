@@ -7,6 +7,11 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [0, 1, 2, 3]
+        shard_total: [4]
 
     steps:
       - name: Check out repository
@@ -24,20 +29,24 @@ jobs:
       - name: Install Playwright browser
         run: playwright install --with-deps chromium
 
-      - name: Run scraper
-        run: python main.py
+      - name: Run scraper shard
+        run: >
+          python main.py
+          --shard-index ${{ matrix.shard_index }}
+          --shard-total ${{ matrix.shard_total }}
+          --output stock_data_shard_${{ matrix.shard_index }}.csv
 
       - name: Upload CSV output
         uses: actions/upload-artifact@v4
         with:
-          name: hkex-stock-data
-          path: stock_data.csv
+          name: hkex-stock-data-shard-${{ matrix.shard_index }}
+          path: stock_data_shard_${{ matrix.shard_index }}.csv
           if-no-files-found: error
 
       - name: Upload debug log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hkex-scraper-debug-log
+          name: hkex-scraper-debug-log-shard-${{ matrix.shard_index }}
           path: stock_scraper_debug.log
           if-no-files-found: ignore
