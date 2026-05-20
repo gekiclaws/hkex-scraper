@@ -71,7 +71,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import pandas as pd
+          import csv
 
           shard_dir = Path("shard-artifacts")
           shard_paths = sorted(shard_dir.glob("stock_data_shard_*.csv"))
@@ -79,13 +79,37 @@ jobs:
           if not shard_paths:
               raise SystemExit("No shard CSVs found")
 
-          frames = [pd.read_csv(path) for path in shard_paths]
-          df = pd.concat(frames, ignore_index=True)
-          df["CODE_NUM"] = pd.to_numeric(df["CODE"], errors="coerce")
-          df = df.sort_values(by=["CODE_NUM", "CODE"]).drop(columns=["CODE_NUM"])
-          df.to_csv("stock_data.csv", index=False)
+          rows = []
+          fieldnames = None
 
-          print(f"Combined {len(shard_paths)} shards into stock_data.csv with {len(df)} rows")
+          for path in shard_paths:
+              with path.open(newline="") as f:
+                  reader = csv.DictReader(f)
+                  if fieldnames is None:
+                      fieldnames = reader.fieldnames
+                  elif reader.fieldnames != fieldnames:
+                      raise SystemExit(f"Unexpected CSV headers in {path}: {reader.fieldnames}")
+
+                  rows.extend(reader)
+
+          if fieldnames is None:
+              raise SystemExit("No CSV headers found")
+
+          def code_sort_key(row):
+              code = row.get("CODE", "")
+              try:
+                  return (0, int(code), code)
+              except ValueError:
+                  return (1, code)
+
+          rows.sort(key=code_sort_key)
+
+          with open("stock_data.csv", "w", newline="") as f:
+              writer = csv.DictWriter(f, fieldnames=fieldnames)
+              writer.writeheader()
+              writer.writerows(rows)
+
+          print(f"Combined {len(shard_paths)} shards into stock_data.csv with {len(rows)} rows")
           PY
 
       - name: Upload combined CSV output
