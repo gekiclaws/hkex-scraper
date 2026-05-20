@@ -3,7 +3,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from math import ceil
 
-from io_utils import reset_temp_csv, sort_and_finalize_csv
+from csv_output import reset_temp_csv, sort_and_finalize_csv
 from scraper import scrape_worker
 
 logging.basicConfig(

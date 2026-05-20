@@ -3,8 +3,6 @@ import logging
 import os
 import threading
 
-import pandas as pd
-
 logger = logging.getLogger(__name__)
 
 CSV_TEMP_PATH = "stock_data_temp.csv"
@@ -23,6 +21,14 @@ FIELDNAMES = [
 ]
 
 _csv_lock = threading.Lock()
+
+
+def code_sort_key(row: dict):
+    code = row.get("CODE", "")
+    try:
+        return (0, int(code), code)
+    except ValueError:
+        return (1, code)
 
 
 def reset_temp_csv() -> None:
@@ -50,22 +56,27 @@ def sort_and_finalize_csv(output_path: str = CSV_FINAL_PATH) -> bool:
             logger.error("No temp CSV found to finalize")
             return False
 
-        df = pd.read_csv(CSV_TEMP_PATH)
+        with open(CSV_TEMP_PATH, newline="") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            rows = list(reader)
 
-        # Try to sort numerically if possible
-        try:
-            df["CODE"] = df["CODE"].astype(int)
-        except Exception:
-            pass
+        if fieldnames is None:
+            logger.error("No CSV headers found to finalize")
+            return False
 
-        df_sorted = df.sort_values(by=["CODE"])
-        df_sorted.to_csv(output_path, index=False)
+        rows.sort(key=code_sort_key)
+
+        with open(output_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
         os.remove(CSV_TEMP_PATH)
 
-        total = len(df_sorted)
-        success = int((df_sorted["STATUS"] == "Success").sum())
-        error = int((df_sorted["STATUS"] == "Error").sum())
+        total = len(rows)
+        success = sum(1 for row in rows if row.get("STATUS") == "Success")
+        error = sum(1 for row in rows if row.get("STATUS") == "Error")
         logger.info(f"Finalized CSV. Path={output_path} Total={total} Success={success} Error={error}")
 
         return True
