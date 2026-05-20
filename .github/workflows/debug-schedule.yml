@@ -1,0 +1,23 @@
+name: Debug Schedule
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Temporary diagnostic schedule. GitHub Actions cron uses UTC.
+    - cron: "*/5 * * * *"
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Print trigger context
+        run: |
+          echo "event_name=${{ github.event_name }}"
+          echo "ref=${{ github.ref }}"
+          echo "sha=${{ github.sha }}"
+          date -u
+
+      - name: Confirm schedule fired
+        run: echo "debug schedule fired"
