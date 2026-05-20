@@ -2,6 +2,9 @@ name: Run HKEX scraper
 
 on:
   workflow_dispatch:
+  schedule:
+    # Runs at 16:30 Hong Kong time, Monday through Friday.
+    - cron: "30 8 * * 1-5"
 
 jobs:
   scrape:
