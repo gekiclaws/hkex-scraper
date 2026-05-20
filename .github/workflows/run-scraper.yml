@@ -53,3 +53,44 @@ jobs:
           name: hkex-scraper-debug-log-shard-${{ matrix.shard_index }}
           path: stock_scraper_debug.log
           if-no-files-found: ignore
+
+  combine:
+    runs-on: ubuntu-latest
+    needs: scrape
+    timeout-minutes: 10
+
+    steps:
+      - name: Download shard CSV artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: hkex-stock-data-shard-*
+          path: shard-artifacts
+          merge-multiple: true
+
+      - name: Combine and sort shard CSVs
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          shard_dir = Path("shard-artifacts")
+          shard_paths = sorted(shard_dir.glob("stock_data_shard_*.csv"))
+
+          if not shard_paths:
+              raise SystemExit("No shard CSVs found")
+
+          frames = [pd.read_csv(path) for path in shard_paths]
+          df = pd.concat(frames, ignore_index=True)
+          df["CODE_NUM"] = pd.to_numeric(df["CODE"], errors="coerce")
+          df = df.sort_values(by=["CODE_NUM", "CODE"]).drop(columns=["CODE_NUM"])
+          df.to_csv("stock_data.csv", index=False)
+
+          print(f"Combined {len(shard_paths)} shards into stock_data.csv with {len(df)} rows")
+          PY
+
+      - name: Upload combined CSV output
+        uses: actions/upload-artifact@v4
+        with:
+          name: hkex-stock-data
+          path: stock_data.csv
+          if-no-files-found: error
