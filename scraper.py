@@ -6,7 +6,7 @@ import time
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 
-from io_utils import write_row
+from csv_output import write_row
 
 logger = logging.getLogger(__name__)
 print_lock = threading.Lock()
