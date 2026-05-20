@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
   schedule:
     # Runs at 16:31 Hong Kong time, Monday through Friday.
-    - cron: "31 8 * * 1-5"
+    - cron: "31 16 * * 1-5"
+      timezone: "Asia/Hong_Kong"
 
 jobs:
   scrape:
